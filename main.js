@@ -37,12 +37,12 @@ function sendText(res, statusCode, message, headers = {}) {
 }
 
 function sendImage(res, image, source) {
-  res.writeHead(200, {
-    'Content-Type': 'image/jpeg',
-    'Content-Length': image.length,
-    [SOURCE_HEADER]: source,
-  });
-  res.end(image);
+    res.writeHead(200, {
+        'Content-Type': 'image/jpeg',
+        'Content-Length': image.length,
+        [SOURCE_HEADER]: source,
+    });
+    res.end(image);
 }
 
 function parseCode(url) {
@@ -61,61 +61,104 @@ function getCachePath(code) {
 }
 
 async function writeCacheFile(filePath, data) {
-  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
-  try {
-    await fs.writeFile(tmpPath, data);
-    await fs.rename(tmpPath, filePath);
-  } catch (err) {
-    await fs.rm(tmpPath, { force: true });
-    throw err;
-  }
+    const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+    try {
+        await fs.writeFile(tmpPath, data);
+        await fs.rename(tmpPath, filePath);
+    } catch (err) {
+        await fs.rm(tmpPath, { force: true });
+        throw err;
+    }
 }
 
 async function readFromCache(code) {
-  try {
-    return await fs.readFile(getCachePath(code));
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw err;
-  }
+    try {
+        return await fs.readFile(getCachePath(code));
+    } catch (err) {
+        if (err.code === 'ENOENT') return null;
+        throw err;
+    }
 }
 
 async function fetchFromHttpCat(code) {
-  const response = await superagent
-    .get(`https://http.cat/${code}`)
-    .responseType('blob')
-    .timeout({ response: 5000, deadline: 15000 });
-  return response.body;
+    const response = await superagent
+        .get(`https://http.cat/${code}`)
+        .responseType('blob')
+        .timeout({ response: 5000, deadline: 15000 });
+    return response.body;
 }
 
 function describeFetchError(err) {
-  if (err.status) return `http.cat повернув код ${err.status}`;
-  if (err.timeout) return 'http.cat не відповів вчасно';
-  return `не вдалося з'єднатися з http.cat (${err.code || err.message})`;
+    if (err.status) return `http.cat повернув код ${err.status}`;
+    if (err.timeout) return 'http.cat не відповів вчасно';
+    return `не вдалося з'єднатися з http.cat (${err.code || err.message})`;
 }
 
 async function handleGet(res, code) {
-  const cached = await readFromCache(code);
-  if (cached !== null) {
-    sendImage(res, cached, 'cache');
-    return;
-  }
+    const cached = await readFromCache(code);
+    if (cached !== null) {
+        sendImage(res, cached, 'cache');
+        return;
+    }
 
-  let image;
-  try {
-    image = await fetchFromHttpCat(code);
-  } catch (err) {
-    sendText(res, 404, `Картинку для коду ${code} не знайдено: ${describeFetchError(err)}\n`);
-    return;
-  }
+    let image;
+    try {
+        image = await fetchFromHttpCat(code);
+    } catch (err) {
+        sendText(res, 404, `Картинку для коду ${code} не знайдено: ${describeFetchError(err)}\n`);
+        return;
+    }
 
-  try {
-    await writeCacheFile(getCachePath(code), image);
-  } catch (err) {
-    console.error(`Не вдалося зберегти ${code} у кеш: ${err.message}`);
-  }
+    try {
+        await writeCacheFile(getCachePath(code), image);
+    } catch (err) {
+        console.error(`Не вдалося зберегти ${code} у кеш: ${err.message}`);
+    }
 
-  sendImage(res, image, 'http.cat');
+    sendImage(res, image, 'http.cat');
+}
+
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
+
+async function readBody(req) {
+    const chunks = [];
+    let size = 0;
+
+    for await (const chunk of req) {
+        size += chunk.length;
+        if (size <= MAX_BODY_SIZE) {
+            chunks.push(chunk);
+        }
+    }
+
+    if (size > MAX_BODY_SIZE) return null;
+    return Buffer.concat(chunks);
+}
+
+function isJpeg(data) {
+    return data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+}
+
+async function handlePut(req, res, code) {
+    const body = await readBody(req);
+
+    if (body === null) {
+        sendText(res, 413, `Тіло запиту завелике (максимум ${MAX_BODY_SIZE / 1024 / 1024} МБ)\n`);
+        return;
+    }
+
+    if (body.length === 0) {
+        sendText(res, 400, 'Тіло запиту порожнє: очікується картинка JPEG\n');
+        return;
+    }
+
+    if (!isJpeg(body)) {
+        sendText(res, 415, 'Тіло запиту не є картинкою JPEG\n');
+        return;
+    }
+
+    await writeCacheFile(getCachePath(code), body);
+    sendText(res, 201, `Картинку для коду ${code} збережено в кеш\n`);
 }
 
 async function handleRequest(req, res) {
@@ -137,7 +180,7 @@ async function handleRequest(req, res) {
                 await handleGet(res, code);
                 break;
             case 'PUT':
-                sendText(res, 501, `PUT ${code}: ще не реалізовано\n`);
+                await handlePut(req, res, code);
                 break;
             case 'DELETE':
                 sendText(res, 501, `DELETE ${code}: ще не реалізовано\n`);
