@@ -160,7 +160,19 @@ async function handlePut(req, res, code) {
     await writeCacheFile(getCachePath(code), body);
     sendText(res, 201, `Картинку для коду ${code} збережено в кеш\n`);
 }
+async function handleDelete(res, code) {
+    try {
+        await fs.unlink(getCachePath(code));
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            sendText(res, 404, `Картинки для коду ${code} немає в кеші\n`);
+            return;
+        }
+        throw err;
+    }
 
+    sendText(res, 200, `Картинку для коду ${code} видалено з кешу\n`);
+}
 async function handleRequest(req, res) {
     try {
         if (!['GET', 'PUT', 'DELETE'].includes(req.method)) {
@@ -183,7 +195,7 @@ async function handleRequest(req, res) {
                 await handlePut(req, res, code);
                 break;
             case 'DELETE':
-                sendText(res, 501, `DELETE ${code}: ще не реалізовано\n`);
+                await handleDelete(res, code);
                 break;
         }
     } catch (err) {
