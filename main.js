@@ -3,6 +3,8 @@ const http = require('http');
 const fs = require('fs/promises');
 const path = require('path');
 const { once } = require('events');
+const { randomUUID } = require('crypto');
+const superagent = require('superagent');
 
 
 program
@@ -23,6 +25,8 @@ const host = options.host;
 const cacheDir = path.resolve(options.cache);
 
 const ALLOWED_METHODS = 'GET, PUT, DELETE';
+const SOURCE_HEADER = 'X-Image-Source';
+
 
 function sendText(res, statusCode, message, headers = {}) {
     res.writeHead(statusCode, {
@@ -30,6 +34,15 @@ function sendText(res, statusCode, message, headers = {}) {
         ...headers,
     });
     res.end(message);
+}
+
+function sendImage(res, image, source) {
+  res.writeHead(200, {
+    'Content-Type': 'image/jpeg',
+    'Content-Length': image.length,
+    [SOURCE_HEADER]: source,
+  });
+  res.end(image);
 }
 
 function parseCode(url) {
@@ -45,6 +58,64 @@ function parseCode(url) {
 
 function getCachePath(code) {
     return path.join(cacheDir, `${code}.jpg`);
+}
+
+async function writeCacheFile(filePath, data) {
+  const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, data);
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    await fs.rm(tmpPath, { force: true });
+    throw err;
+  }
+}
+
+async function readFromCache(code) {
+  try {
+    return await fs.readFile(getCachePath(code));
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+async function fetchFromHttpCat(code) {
+  const response = await superagent
+    .get(`https://http.cat/${code}`)
+    .responseType('blob')
+    .timeout({ response: 5000, deadline: 15000 });
+  return response.body;
+}
+
+function describeFetchError(err) {
+  if (err.status) return `http.cat повернув код ${err.status}`;
+  if (err.timeout) return 'http.cat не відповів вчасно';
+  return `не вдалося з'єднатися з http.cat (${err.code || err.message})`;
+}
+
+async function handleGet(res, code) {
+  const cached = await readFromCache(code);
+  if (cached !== null) {
+    sendImage(res, cached, 'cache');
+    return;
+  }
+
+  let image;
+  try {
+    image = await fetchFromHttpCat(code);
+  } catch (err) {
+    sendText(res, 404, `Картинку для коду ${code} не знайдено: ${describeFetchError(err)}\n`);
+    return;
+  }
+
+  try {
+    await writeCacheFile(getCachePath(code), image);
+  } catch (err) {
+    console.error(`Не вдалося зберегти ${code} у кеш: ${err.message}`);
+  }
+
+  sendImage(res, image, 'http.cat');
 }
 
 async function handleRequest(req, res) {
@@ -63,7 +134,7 @@ async function handleRequest(req, res) {
         }
         switch (req.method) {
             case 'GET':
-                sendText(res, 501, `GET ${code}: ще не реалізовано\n`);
+                await handleGet(res, code);
                 break;
             case 'PUT':
                 sendText(res, 501, `PUT ${code}: ще не реалізовано\n`);
