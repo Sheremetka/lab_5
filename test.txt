@@ -1,0 +1,44 @@
+# Запуск сервера
+node main.js
+node main.js -h 127.0.0.1 -p abc -c ./cache
+node main.js -h 127.0.0.1 -p 3000 -c ./cache
+
+# Недозволений метод -> 405 + заголовок Allow
+curl -i -X POST http://127.0.0.1:3000/200
+
+# Некоректний шлях -> 400
+curl -i http://127.0.0.1:3000/abc
+curl -i http://127.0.0.1:3000/999
+
+# GET картинки, якої немає в кеші -> 200, X-Image-Source: http.cat
+curl -s -D - -o /dev/null -w "time: %{time_total}s\n" http://127.0.0.1:3000/200
+
+# Повторний GET -> 200, X-Image-Source: cache
+curl -s -D - -o /dev/null -w "time: %{time_total}s\n" http://127.0.0.1:3000/200
+ls cache
+
+# GET коду, якого немає на http.cat -> 404, у кеш нічого не зберігається
+curl -i http://127.0.0.1:3000/250
+ls cache
+
+# PUT власної картинки -> 201
+curl -i -X PUT --data-binary @test_image.jpg http://127.0.0.1:3000/200
+
+# GET після PUT -> 200, X-Image-Source: cache, розмір як у test_image.jpg
+curl -s -D - -o /dev/null http://127.0.0.1:3000/200
+
+# PUT не JPEG -> 415
+curl -i -X PUT --data-binary "hello" http://127.0.0.1:3000/201
+
+# PUT з порожнім тілом -> 400
+curl -i -X PUT http://127.0.0.1:3000/201
+
+# DELETE картинки з кешу -> 200
+curl -i -X DELETE http://127.0.0.1:3000/200
+ls cache
+
+# DELETE картинки, якої немає -> 404
+curl -i -X DELETE http://127.0.0.1:3000/200
+
+# GET після DELETE -> 200, X-Image-Source: http.cat
+curl -s -D - -o /dev/null http://127.0.0.1:3000/200
